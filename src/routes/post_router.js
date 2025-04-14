@@ -2,15 +2,43 @@ const express = require('express');
 const app = express();
 const multer = require('multer'); // Upload image
 const postController = require('../controllers/post_controller');
+const path = require('path');
+const fs = require('fs');
 const storage = multer.diskStorage({
     destination: function (req, file, cb) {
-      cb(null, '../public/img/post')
+      try {
+        const uploadPath = path.join(__dirname, '../../public/img/post');
+        fs.mkdirSync(uploadPath, { recursive: true });
+        cb(null, uploadPath);
+      } catch (err) {
+        cb(new Error('Failed to create upload directory'));
+      }
     },
     filename: function (req, file, cb) {
-      cb(null, file.originalname)
+      try {
+        const filename = `${Date.now()}-${file.originalname.replace(/\s+/g, '-')}`;
+        cb(null, filename);
+      } catch (err) {
+        cb(new Error('Failed to process filename'));
+      }
     }
-  })
-const upload = multer({dest: '../public/img/post', storage})
+});
+
+const fileFilter = (req, file, cb) => {
+  if (file.mimetype.startsWith('image/')) {
+    cb(null, true);
+  } else {
+    cb(new Error('Only image files are allowed!'), false);
+  }
+};
+
+const upload = multer({ 
+  storage,
+  fileFilter,
+  limits: {
+    fileSize: 5 * 1024 * 1024 // 5MB limit
+  }
+});
 
 
 app.get("/post/:postSlug", postController.show);

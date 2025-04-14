@@ -42,7 +42,13 @@
                 </li>
                 <li class="sidebar-menu-section">
                     <ul>
-                        <li><span class="ti-arrow-left"></span><a href="/auth/logout">Logout</a></li>
+                        <li>
+                            <form action="/auth/logout" method="POST" class="d-inline">
+                                <button type="submit" class="btn btn-link p-0 border-0 bg-transparent">
+                                    <span class="ti-arrow-left"></span> Logout
+                                </button>
+                            </form>
+                        </li>
                     </ul>
                 </li>
             </ul>

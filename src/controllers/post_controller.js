@@ -5,13 +5,42 @@ const {arrDay, arrMonth} = require('../helpers/dates');
 const showAlert = require('../helpers/alert.js');
 const storage = multer.diskStorage({
     destination: function (req, file, cb) {
-      cb(null, '../public/img/post')
+      try {
+        const uploadPath = path.join(__dirname, '../../public/img/post');
+        fs.mkdirSync(uploadPath, { recursive: true });
+        cb(null, uploadPath);
+        // Now matches the static file serving path in app.js
+      } catch (err) {
+        cb(new Error('Failed to create upload directory'));
+      }
     },
     filename: function (req, file, cb) {
-      cb(null, file.originalname)
+      try {
+        // Sanitize filename and add timestamp
+        const filename = `${Date.now()}-${file.originalname.replace(/\s+/g, '-')}`;
+        cb(null, filename);
+      } catch (err) {
+        cb(new Error('Failed to process filename'));
+      }
     }
-  })
-const upload = multer({dest: '../public/img/post', storage})
+});
+
+const fileFilter = (req, file, cb) => {
+  // Accept images only
+  if (file.mimetype.startsWith('image/')) {
+    cb(null, true);
+  } else {
+    cb(new Error('Only image files are allowed!'), false);
+  }
+};
+
+const upload = multer({ 
+  storage,
+  fileFilter,
+  limits: {
+    fileSize: 5 * 1024 * 1024 // 5MB limit
+  }
+});
 
 
 exports.show = (req, res) => {
@@ -32,6 +61,8 @@ exports.show = (req, res) => {
     })
 
     .then(foundComments => {
+        console.log('Displaying post with image:', post.img);
+        console.log('Full image path:', `/img/post/${post.img}`);
         res.render("post-page", {title: post.title, tag: "", otherPosts: posts, currentPost: post, comments: foundComments, arrDay, arrMonth, search: "", isAuthLink: req.isAuthenticated()});
     })
 
@@ -40,35 +71,39 @@ exports.show = (req, res) => {
     });
 }
 
-exports.showTag = (req, res) => {
-  const postTag = req.params.postTag;
+exports.showTag = async (req, res) => {
+  try {
+    const postTag = req.params.postTag;
+    const foundPosts = await Post.find({tags: postTag}).exec();
+    const foundForTags = await Post.find({active: 1}).sort({created_at: -1}).exec();
 
-  Post.find({tags: postTag}, (err, foundPosts) => {
-      if (err) {
-          console.log(err);
-      } else {
-          Post.find({active: 1}, (err, foundForTags) => {
-              if (err) {
-                  console.log(err);
-              } else {
-                  // Push tag di setiap post ke array,
-                  // Lalu hilangkan duplikat
-                  let allTags = [];
-                  foundForTags.forEach(post => {
-                      post.tags.forEach(tag => {
-                      allTags.push(tag);
-                      })
-                  })
-                  
-                  allTags = allTags.filter(function(value, index, self) {
-                      return self.indexOf(value) === index;
-                  });
+    // Push tag di setiap post ke array,
+    // Lalu hilangkan duplikat
+    let allTags = [];
+    foundForTags.forEach(post => {
+      post.tags.forEach(tag => {
+        allTags.push(tag);
+      });
+    });
+    
+    allTags = allTags.filter((value, index, self) => {
+      return self.indexOf(value) === index;
+    });
 
-              res.render("frontend", {title: postTag, tag: postTag, posts: foundPosts, arrDay, arrMonth, search: "", isAuthLink: req.isAuthenticated(), tags: allTags});
-              }
-          }).sort({created_at: -1});
-      }
-  })
+    res.render("frontend", {
+      title: postTag,
+      tag: postTag,
+      posts: foundPosts,
+      arrDay,
+      arrMonth,
+      search: "",
+      isAuthLink: req.isAuthenticated(),
+      tags: allTags
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).send("Server Error");
+  }
 }
 
 exports.create = (req, res) => {
@@ -79,68 +114,113 @@ exports.create = (req, res) => {
   }
 }
 
-exports.store = (req, res) => {
+exports.store = async (req, res) => {
   const title = req.body.title;
   const slug = title.replace(/\s+/g, '-').toLowerCase();
   const content = req.body.content;
   const tags = req.body.tags.split(",");
-  const img = req.file ? req.file.originalname : "";
+    // Get processed filename directly from multer to ensure consistency
+    const img = req.file ? req.file.filename : ""; 
 
-  Post.findOne({title}, (err, foundPost) => {
-      if (err) {
-          console.log(err);
-      } else {
-          if (foundPost === null) {
-              const newPost = new Post({
-                  title,
-                  slug,
-                  content,
-                  img,
-                  tags,
-                  author: "Admin",
-                  active: 1,
-                  created_at: new Date().getTime(),
-                  updated_at: new Date().getTime()
-              });
-          
-              if (title !== "" && content !== "" && tags !== "") {
-                  newPost.save();
-          
-                  res.render("tambah-post-baru", {title: "Tambah Post Baru", alert: showAlert("alert-success", "post baru berhasil ditambahkan."), previousLink: "/admin/tampil-semua-post", previousTitle: "Tampil Semua Post"});
-              } else {
-                  res.render("tambah-post-baru", {title: "Tambah Post Baru", alert: showAlert("alert-warning", "data tidak boleh kosong!"), previousLink: "/admin/tampil-semua-post", previousTitle: "Tampil Semua Post"});
-              }
-          } else {
-              res.render("tambah-post-baru", {title: "Tambah Post Baru", alert: showAlert("alert-danger", "judul post sudah ada!"), previousLink: "/admin/tampil-semua-post", previousTitle: "Tampil Semua Post"});
-          }
-      }
-  });
+  try {
+    const foundPost = await Post.findOne({title}).exec();
+    
+    if (foundPost) {
+      return res.render("tambah-post-baru", {
+        title: "Tambah Post Baru", 
+        alert: showAlert("alert-danger", "judul post sudah ada!"), 
+        previousLink: "/admin/tampil-semua-post", 
+        previousTitle: "Tampil Semua Post"
+      });
+    }
+
+    if (!title || !content || !tags) {
+      return res.render("tambah-post-baru", {
+        title: "Tambah Post Baru", 
+        alert: showAlert("alert-warning", "data tidak boleh kosong!"), 
+        previousLink: "/admin/tampil-semua-post", 
+        previousTitle: "Tampil Semua Post"
+      });
+    }
+
+    const newPost = new Post({
+        title,
+        slug,
+        content,
+        img: img, // Ensure the image filename is saved correctly
+        tags,
+        author: "Admin",
+        active: 1,
+        created_at: new Date().getTime(),
+        updated_at: new Date().getTime()
+    });
+
+    await newPost.save();
+    
+    res.render("tambah-post-baru", {
+      title: "Tambah Post Baru", 
+      alert: showAlert("alert-success", "post baru berhasil ditambahkan."), 
+      previousLink: "/admin/tampil-semua-post", 
+      previousTitle: "Tampil Semua Post"
+    });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).send("Error saving post");
+  }
 }
 
-exports.indexAdmin = (req, res) => {
+exports.indexAdmin = async (req, res) => {
   if (req.isAuthenticated()) {
-      Post.find({active: 1}, (err, foundPosts) => {
-          res.render("tampil-semua-post", {title: "Tampil Semua Post", tag: "", posts: foundPosts, arrDay, arrMonth, search: "", alert: "", previousLink: "/admin/dashboard", previousTitle: "Dashboard"});
-      });    
+      try {
+          const foundPosts = await Post.find({active: 1}).exec();
+          res.render("tampil-semua-post", {
+              title: "Tampil Semua Post", 
+              tag: "", 
+              posts: foundPosts, 
+              arrDay, 
+              arrMonth, 
+              search: "", 
+              alert: "", 
+              previousLink: "/admin/dashboard", 
+              previousTitle: "Dashboard"
+          });
+      } catch (err) {
+          console.log(err);
+          res.status(500).send("Error loading posts");
+      }
   } else {
       res.redirect('/auth/login');
   } 
 }
 
-exports.findAdmin = (req, res) => {
+exports.findAdmin = async (req, res) => {
   const search = req.body.search;
   
   if (search === "") {
-      res.redirect("/admin/tampil-semua-post");
-  } else {
-      Post.find({title: {$regex: ".*"+search+".*", $options: 'i'}, active: 1}, (err, foundPosts) => { // MASIH SALAH PENCARIANNYA
-  
-          if (err) {
-              console.log(err);
-          } else {
-              res.render("tampil-semua-post", {title: "Search: " + search, tag: "", posts: foundPosts, arrDay, arrMonth, search, alert: "", previousLink: "/admin/tampil-semua-post", previousTitle: "Tampil Semua Post"});
-          }
-      })
+      return res.redirect("/admin/tampil-semua-post");
+  }
+
+  try {
+      const foundPosts = await Post.find({
+          title: {$regex: ".*"+search+".*", $options: 'i'}, 
+          active: 1
+      }).exec();
+      
+      res.render("tampil-semua-post", {
+          title: "Search: " + search, 
+          tag: "", 
+          posts: foundPosts, 
+          arrDay, 
+          arrMonth, 
+          search, 
+          alert: "", 
+          previousLink: "/admin/tampil-semua-post", 
+          previousTitle: "Tampil Semua Post"
+      });
+  } catch (err) {
+      console.log(err);
+      res.status(500).send("Error searching posts");
   }
 }
 
@@ -166,120 +246,198 @@ exports.showAdmin = (req, res, next) => {
   }
 }
 
-exports.showTagAdmin = (req, res) => {
+exports.showTagAdmin = async (req, res) => {
   if (req.isAuthenticated()) {
-      const postTag = req.params.postTag;
-  
-      Post.find({tags: postTag}, (err, foundPosts) => {
-          if (err) {
-              console.log(err);
-          } else {
-              res.render("tampil-semua-post", {title: postTag, tag: postTag, posts: foundPosts, arrDay, arrMonth, search: "", alert: "", previousLink: "/admin/tampil-semua-post", previousTitle: "Tampil Semua Post"});
-          }
-      })    
-  } else {
-      res.redirect('/auth/login');
-  }
-}
-
-exports.archievingPostAdmin = (req, res) => {
-  const postSlug = req.params.postSlug;
-
-  Post.findOneAndUpdate({slug: postSlug}, {active: 0}, (err, postChanged) => {
-      if (err) {
+      try {
+          const postTag = req.params.postTag;
+          const foundPosts = await Post.find({tags: postTag}).exec();
+          res.render("tampil-semua-post", {
+              title: postTag, 
+              tag: postTag, 
+              posts: foundPosts, 
+              arrDay, 
+              arrMonth, 
+              search: "", 
+              alert: "", 
+              previousLink: "/admin/tampil-semua-post", 
+              previousTitle: "Tampil Semua Post"
+          });
+      } catch (err) {
           console.log(err);
-      } else {
-          res.redirect("/admin/tampil-semua-post");
+          res.status(500).send("Error loading tagged posts");
       }
-  })
-}
-
-exports.destroy = (req, res) => {
-  const postSlug = req.params.postSlug;
-
-  Post.findOne({slug: postSlug}, (err, foundPost) => {
-    if (err) {
-      console.log(err);
-    } else {
-      Post.findByIdAndRemove({_id: foundPost._id}, (err) => {
-        if (err) {
-          console.log(err);
-        } else {
-          res.redirect("/admin/arsip-post");
-        }
-      })
-    }
-  }); 
-}
-
-exports.indexArchieveAdmin = (req, res) => {
-  if (req.isAuthenticated()) {
-      Post.find({active: 0}, (err, foundPosts) => {
-          res.render("arsip-post", {title: "Arsip Post", posts: foundPosts, arrDay, arrMonth, tag: "", search: "", alert: "", previousLink: "/admin/dashboard", previousTitle: "Dashboard"});
-      });
   } else {
       res.redirect('/auth/login');
   }
 }
 
-exports.findArchieveAdmin = (req, res) => {
+exports.archievingPostAdmin = async (req, res) => {
+  const postSlug = req.params.postSlug;
+  console.log(`Attempting to archive post: ${postSlug}`);
+
+  try {
+      // Log post state before update
+      const preUpdatePost = await Post.findOne({slug: postSlug}).exec();
+      console.log('Pre-update post state:', preUpdatePost ? preUpdatePost.active : 'Not found');
+
+      const result = await Post.findOneAndUpdate(
+          {slug: postSlug}, 
+          {active: 0},
+          {new: true}
+      ).exec();
+      
+      if (!result) {
+          console.log(`Post not found: ${postSlug}`);
+          return res.status(404).send("Post not found");
+      }
+
+      // Log post state after update
+      console.log('Post update result:', result);
+      console.log('Post active status after update:', result.active);
+
+      // Verify the update in database
+      const post = await Post.findOne({slug: postSlug}).exec();
+      console.log('Database verification - post active status:', post.active);
+
+      console.log(`Successfully archived post: ${postSlug}`);
+      res.redirect("/admin/tampil-semua-post");
+  } catch (err) {
+      console.error('Error archiving post:', err);
+      res.status(500).send("Error archiving post");
+  }
+}
+
+exports.destroy = async (req, res) => {
+  const postSlug = req.params.postSlug;
+  console.log(`Attempting to delete post: ${postSlug}`);
+
+  try {
+      const foundPost = await Post.findOne({slug: postSlug}).exec();
+      if (!foundPost) {
+          console.log(`Post not found: ${postSlug}`);
+          return res.redirect("/admin/arsip-post");
+      }
+      
+      console.log('Found post to delete:', foundPost);
+      const result = await Post.findOneAndDelete({_id: foundPost._id}).exec();
+      
+      if (!result) {
+          console.log('Delete operation failed for post:', postSlug);
+          return res.status(500).send("Failed to delete post");
+      }
+
+      console.log('Successfully deleted post:', postSlug);
+      res.redirect("/admin/arsip-post");
+  } catch (err) {
+      console.error('Error deleting post:', err);
+      res.status(500).send("Error deleting post");
+  }
+}
+
+exports.indexArchieveAdmin = async (req, res) => {
+  if (req.isAuthenticated()) {
+      try {
+          const foundPosts = await Post.find({active: 0}).exec();
+          res.render("arsip-post", {
+              title: "Arsip Post", 
+              posts: foundPosts, 
+              arrDay, 
+              arrMonth, 
+              tag: "", 
+              search: "", 
+              alert: "", 
+              previousLink: "/admin/dashboard", 
+              previousTitle: "Dashboard"
+          });
+      } catch (err) {
+          console.log(err);
+          res.status(500).send("Error loading archived posts");
+      }
+  } else {
+      res.redirect('/auth/login');
+  }
+}
+
+exports.findArchieveAdmin = async (req, res) => {
   const search = req.body.search;
   
   if (search === "") {
-      res.redirect("/admin/arsip-post");
-  } else {
-      Post.find({title: {$regex: ".*"+search+".*", $options: 'i'}, active: 0}, (err, foundPosts) => { // MASIH SALAH PENCARIANNYA
-  
-          if (err) {
-              console.log(err);
-          } else {
-              res.render("arsip-post", {title: "Search: " + search, tag: "", posts: foundPosts, arrDay, arrMonth, search, alert: "", previousLink: "/admin/arsip-post", previousTitle: "Arsip Post"});
-          }
-      })
+      return res.redirect("/admin/arsip-post");
+  }
+
+  try {
+      const foundPosts = await Post.find({
+          title: {$regex: ".*"+search+".*", $options: 'i'},
+          active: 0
+      }).exec();
+      
+      res.render("arsip-post", {
+          title: "Search: " + search, 
+          tag: "", 
+          posts: foundPosts, 
+          arrDay, 
+          arrMonth, 
+          search, 
+          alert: "", 
+          previousLink: "/admin/arsip-post", 
+          previousTitle: "Arsip Post"
+      });
+  } catch (err) {
+      console.log(err);
+      res.status(500).send("Error searching archived posts");
   }
 }
 
-exports.activatePost = (req, res) => {
+exports.activatePost = async (req, res) => {
   const postSlug = req.params.postSlug;
 
-  Post.findOneAndUpdate({slug: postSlug}, {active: 1}, (err, postChanged) => {
-      if (err) {
-          console.log(err);
-      } else {
-          res.redirect("/admin/arsip-post");
-      }
-  })
+  try {
+      await Post.findOneAndUpdate({slug: postSlug}, {active: 1}).exec();
+      res.redirect("/admin/arsip-post");
+  } catch (err) {
+      console.log(err);
+      res.status(500).send("Error activating post");
+  }
 }
 
-exports.modify = (req, res) => {
+exports.modify = async (req, res) => {
   if (req.isAuthenticated()) {
       const postSlug = req.params.postSlug;
-  
-      Post.findOne({slug: postSlug}, (err, foundPost) => {
-          if (err) {
-              console.log(err);
-          } else {
-              res.render("ubah-post", {title: "Ubah Post", post: foundPost, alert: "", previousLink: "/admin/tampil-semua-post", previousTitle: "Tampil Semua Post"});
-          }
-      })
+
+      try {
+          const foundPost = await Post.findOne({slug: postSlug}).exec();
+          res.render("ubah-post", {
+              title: "Ubah Post", 
+              post: foundPost, 
+              alert: "", 
+              previousLink: "/admin/tampil-semua-post", 
+              previousTitle: "Tampil Semua Post"
+          });
+      } catch (err) {
+          console.log(err);
+          res.status(500).send("Error loading post for modification");
+      }
   } else {
       res.redirect('/auth/login');
   }
 }
 
-exports.update = (req, res) => {
+exports.update = async (req, res) => {
   const title = req.body.title;
   const slug = req.body.slug;
   const content = req.body.content;
   const tags = req.body.tags.split(",");
-  const img = req.file ? req.file.originalname : req.body.prev_img;
+  const img = req.file ? req.file.filename : req.body.prev_img;
   const updated_at = new Date().getTime();
 
-  Post.findOneAndUpdate({slug}, {title, content, tags, img, updated_at}, (err, postChanged) => {
-      if (err) {
-          console.log(err);
-      } else {
-          res.redirect("/admin/tampil-semua-post");
-      }
-  })
+  try {
+      await Post.findOneAndUpdate(
+          {slug}, 
+          {title, content, tags, img, updated_at}
+      ).exec();
+      res.redirect("/admin/tampil-semua-post");
+  } catch (err) {
+      console.log(err);
+      res.status(500).send("Error updating post");
+  }
 }
