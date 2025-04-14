@@ -104,13 +104,15 @@ exports.postRegister = async (req, res) => {
     }
 }
 
-exports.postLogout = (req, res) => {
-    req.logout((err) => {
-        if (err) {
+exports.postLogout = (req, res, next) => {
+    req.logout(function(err) {
+        if (err) { 
             console.error('Logout error:', err);
-            return res.redirect('/admin/dashboard');
+            return next(err); 
         }
-        res.redirect('/auth/login');
+        req.session.destroy(() => {
+            res.redirect('/auth/login');
+        });
     });
 }
 
